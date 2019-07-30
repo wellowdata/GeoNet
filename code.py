@@ -10,6 +10,12 @@ import scipy.io
 import cv2
 #from utils_sceneparsing import *
 
+import sys
+sys.path.append('../Shapes.ai/')
+from ADE20k_iterator import ADE20k_iterator, ADE20k_iterator_size
+
+from tensorflow.python.lib.io import file_io
+
 os.system('nvidia-smi -q -d Memory |grep -A4 GPU|grep Free >tmp')
 os.environ['CUDA_VISIBLE_DEVICES']=str(np.argmax([int(x.split()[2]) for x in open('tmp','r').readlines()]))
 os.system('rm tmp')
@@ -18,6 +24,9 @@ print(os.environ['CUDA_VISIBLE_DEVICES'])
 config = tf.ConfigProto()
 config.gpu_options.allow_growth=True
 sess = tf.Session(config=config)
+
+#crop_size_h = 512
+#crop_size_w = 512
 
 crop_size_h = 481
 crop_size_w = 641
@@ -109,7 +118,7 @@ class DEEPLAB(object):
     def __init__(self, fcn_ver=32):
         self.deeplab_ver = 'largeFOV'
         self.mean_BGR = [104.008, 116.669, 122.675]
-        self.pretrain_weight = np.load('./initilization_model/model_denoise_depth_norm.npy',allow_pickle=True).tolist()
+        self.pretrain_weight = np.load('./initilization_model/model_denoise_depth_norm.npy',allow_pickle=True, encoding='latin1').tolist()
 
         self.crop_size = 320
         self.crop_size_h = 481
@@ -605,17 +614,18 @@ class DEEPLAB(object):
         saver_a = tf.train.Saver([v for v in tf.trainable_variables()])
         saver_a.restore(sess, './trainmodel/checkpoints/SRCNN.model-399999')
 
-        list = scipy.io.loadmat('./data/splits.mat')
-        list = list['testNdxs']-1
+        #list = scipy.io.loadmat('./data/splits.mat')
+        #list = list(ADE20k_iterator)
+        #list = list['testNdxs']-1
 
-        images = scipy.io.loadmat('./data/images_uint8.mat')
-        images = images['images']
-        images = images[:,:,:,list]
+        #images = scipy.io.loadmat('./data/images_uint8.mat')
+        #images = images['images']
+        #images = images[:,:,:,list]
 
         grid_dic = scipy.io.loadmat('./data/grid.mat')
         grid_data = grid_dic['grid']
         grid_data = np.expand_dims(grid_data, axis=0)
-        num = list.shape[0]
+        num = 1 #ADE20k_iterator_size()
         depths_pred = np.zeros((crop_size_h, crop_size_w, num), dtype=np.float32)
         norms_pred = np.zeros((crop_size_h, crop_size_w, 3, num), dtype=np.float32)
 
@@ -623,33 +633,50 @@ class DEEPLAB(object):
         depths_pred_estimate = np.zeros((crop_size_h, crop_size_w, num), dtype=np.float32)
         input1 = np.zeros((1, crop_size_h, crop_size_w, 3), dtype=np.float32)
 
-        for i in range(0, images.shape[3]):
-            print(i)
-            img_data = images[:, :, :, i]
+        for img, path in ADE20k_iterator():
+            try:
+                print(path)
+                f_name = path.split('.jpg')[0].split('/')[-1]
+                if not os.path.isfile('ADE20k_outputs/{}_depth_est.npy'.format(f_name))
+                
+                img_data = img.resize((640, 480,))
 
-            img_data = np.expand_dims(img_data, axis=0)
-            img_data_r = img_data[0, :, :, 0] - 122.675 * 2
-            img_data_g = img_data[0, :, :, 1] - 116.669 * 2
-            img_data_b = img_data[0, :, :, 2] - 104.008 * 2
+                img_data = np.expand_dims(img_data, axis=0)
+                img_data_r = img_data[0, :, :, 0] - 122.675 * 2
+                img_data_g = img_data[0, :, :, 1] - 116.669 * 2
+                img_data_b = img_data[0, :, :, 2] - 104.008 * 2
 
-            input1[0, 0:crop_size_h-1, 0:crop_size_w-1, 0] = np.squeeze(img_data_r)
-            input1[0, 0:crop_size_h-1, 0:crop_size_w-1, 1] = np.squeeze(img_data_g)
-            input1[0, 0:crop_size_h-1, 0:crop_size_w-1, 2] = np.squeeze(img_data_b)
+                input1[0, 0:crop_size_h-1, 0:crop_size_w-1, 0] = np.squeeze(img_data_r)
+                input1[0, 0:crop_size_h-1, 0:crop_size_w-1, 1] = np.squeeze(img_data_g)
+                input1[0, 0:crop_size_h-1, 0:crop_size_w-1, 2] = np.squeeze(img_data_b)
 
-            original_depth, original_norm, refined_norm, refined_depth = sess.run(
-                [exp_depth, fc8_upsample_norm, norm_pred_noise, estimate_depth],
-                feed_dict={inputs: input1, grid: grid_data})
-            depths_pred[:, :, i] = np.squeeze(original_depth)
-            norms_pred[:, :, :, i] = np.squeeze(original_norm)
-            norms_pred_estimate[:, :, :, i] = np.squeeze(refined_norm)
-            depths_pred_estimate[:,:,i] = np.squeeze(refined_depth)
+                original_depth, original_norm, refined_norm, refined_depth = sess.run(
+                    [exp_depth, fc8_upsample_norm, norm_pred_noise, estimate_depth],
+                    feed_dict={inputs: input1, grid: grid_data})
+                norms_pred[:, :, :, 0] = np.squeeze(original_norm)
+                depths_pred[:, :, 0] = np.squeeze(original_depth)
+                norms_pred_estimate[:, :, :, 0] = np.squeeze(refined_norm)
+                depths_pred_estimate[:,:,0] = np.squeeze(refined_depth)
 
-        #scipy.io.savemat(self.train_dir+'/depths_pred.mat',{'depths':depths_pred})
-        #scipy.io.savemat(self.train_dir + '/norms_pred.mat', {'norms':norms_pred})
-        scipy.io.savemat(self.train_dir+'/norms_estimate.mat', {'norms': norms_pred_estimate})
-        scipy.io.savemat(self.train_dir + '/depths_estimate.mat', {'depths': depths_pred_estimate})
+                my_save_function(f_name, norms_pred, depths_pred, norms_pred_estimate, depths_pred_estimate)
 
+            except Exception as e:
+                print(path, 'failed')
+                print(e)
 
+def my_save_function(f_name, norms_pred, depths_pred, norms_pred_estimate, depths_pred_estimate):
+    np.save('ADE20k_outputs/{}_normal'.format(f_name), norms_pred)
+    np.save('ADE20k_outputs/{}_depth'.format(f_name), depths_pred)
+    np.save('ADE20k_outputs/{}_normal_est'.format(f_name), norms_pred_estimate)
+    np.save('ADE20k_outputs/{}_depth_est'.format(f_name), depths_pred_estimate)
+                
+    np.save(file_io.FileIO('gs://ucl-interior-desing/ADEChallenge2016/GeoNet/{}_normal'.format(f_name), 'w'), norms_pred)
+    np.save(file_io.FileIO('gs://ucl-interior-desing/ADEChallenge2016/GeoNet/{}_depth'.format(f_name), 'w'), depths_pred)
+    np.save(file_io.FileIO('gs://ucl-interior-desing/ADEChallenge2016/GeoNet/{}_normal_est'.format(f_name), 'w'), norms_pred_estimate)
+    np.save(file_io.FileIO('gs://ucl-interior-desing/ADEChallenge2016/GeoNet/{}_depth_est'.format(f_name), 'w'), depths_pred_estimate)
+
+    
+                
 def main(_):
     model = DEEPLAB()
     if train_phase:
